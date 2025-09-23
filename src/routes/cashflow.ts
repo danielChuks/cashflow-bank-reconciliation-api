@@ -1,10 +1,7 @@
-import express, { Request, Response } from "express";
-import pg from "pg";
+import express, { Request, Response } from 'express';
+import { pool } from '../database.js';
 
 const router = express.Router();
-const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-});
 
 interface CashflowRow {
   activity_type: string;
@@ -13,52 +10,38 @@ interface CashflowRow {
   net: string;
 }
 
-router.get("/cashflow", async (req: Request, res: Response) => {
+router.get('/cashflow', async (req: Request, res: Response) => {
   try {
     const { companyid, fromDate, toDate } = req.query;
 
     if (!companyid || !fromDate || !toDate) {
-      return res.status(400).json({ error: "Missing query params" });
+      return res.status(400).json({ error: 'Missing query params' });
     }
 
+    // Simplified query using helper columns
     const query = `
-      WITH cash_flows AS (
-        SELECT 
-          date,
-          account,
-          debit,
-          credit,
-          bankaccount,
-          reference,
-          companyid,
-          CASE
-            WHEN account IN ('Sales', 'Office Rent', 'Utilities Expense', 'Inventory', 'Bank Charges')
-              THEN 'Operating'
-            WHEN account IN ('Bank Loan') OR note ILIKE '%Capital Contribution%'
-              THEN 'Financing'
-            ELSE 'Investing'
-          END AS activity_type,
-          (debit - credit) AS net_cash
-        FROM AccountingLedgerEntry
-        WHERE companyid = $1
-          AND date BETWEEN $2 AND $3
-      )
       SELECT 
-        activity_type,
-        SUM(CASE WHEN net_cash > 0 THEN net_cash ELSE 0 END) AS inflows,
-        SUM(CASE WHEN net_cash < 0 THEN ABS(net_cash) ELSE 0 END) AS outflows,
-        SUM(net_cash) AS net
-      FROM cash_flows
-      GROUP BY activity_type;
+        cashflow_category as activity_type,
+        SUM(CASE WHEN (debit - credit) > 0 THEN (debit - credit) ELSE 0 END) AS inflows,
+        SUM(CASE WHEN (debit - credit) < 0 THEN ABS(debit - credit) ELSE 0 END) AS outflows,
+        SUM(debit - credit) AS net
+      FROM AccountingLedgerEntry
+      WHERE companyid = $1
+        AND date BETWEEN $2 AND $3
+        AND is_cash_transaction = TRUE  -- Only actual cash movements
+      GROUP BY cashflow_category;
     `;
 
-    const result = await pool.query<CashflowRow>(query, [
+    const result = await pool().query<CashflowRow>(query, [
       companyid,
       fromDate,
       toDate,
     ]);
 
-    let response: Record<string, { inflows: number; outflows: number; net: number }> = {
+    let response: Record<
+      string,
+      { inflows: number; outflows: number; net: number }
+    > = {
       operating: { inflows: 0, outflows: 0, net: 0 },
       investing: { inflows: 0, outflows: 0, net: 0 },
       financing: { inflows: 0, outflows: 0, net: 0 },
@@ -80,8 +63,9 @@ router.get("/cashflow", async (req: Request, res: Response) => {
       FROM AccountingLedgerEntry
       WHERE companyid = $1
         AND date <= $2
+        AND is_cash_transaction = TRUE
     `;
-    const closingRes = await pool.query<{ closing_balance: string }>(
+    const closingRes = await pool().query<{ closing_balance: string }>(
       closingBalanceQuery,
       [companyid, toDate]
     );
@@ -94,7 +78,7 @@ router.get("/cashflow", async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

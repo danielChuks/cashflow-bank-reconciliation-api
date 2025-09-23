@@ -1,10 +1,7 @@
-import express, { Request, Response } from "express";
-import pg from "pg";
+import express, { Request, Response } from 'express';
+import { pool } from '../database.js';
 
 const router = express.Router();
-const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-});
 
 interface ReconRow {
   reference: string;
@@ -13,16 +10,16 @@ interface ReconRow {
   note: string;
 }
 
-router.get("/reconciliation", async (req: Request, res: Response) => {
+router.get('/reconciliation', async (req: Request, res: Response) => {
   try {
     const { companyid, bankaccount } = req.query;
 
     if (!companyid || !bankaccount) {
-      return res.status(400).json({ error: "Missing query params" });
+      return res.status(400).json({ error: 'Missing query params' });
     }
 
     // Ledger balance
-    const ledgerRes = await pool.query<{ ledger_balance: string }>(
+    const ledgerRes = await pool().query<{ ledger_balance: string }>(
       `SELECT SUM(debit - credit) AS ledger_balance
        FROM AccountingLedgerEntry
        WHERE companyid = $1 AND bankaccount = $2`,
@@ -34,7 +31,7 @@ router.get("/reconciliation", async (req: Request, res: Response) => {
     const bankBalance = 19000;
 
     // Unreconciled transactions
-    const reconcilingRes = await pool.query<ReconRow>(
+    const reconcilingRes = await pool().query<ReconRow>(
       `SELECT reference, account, (debit - credit) AS amount, note
        FROM AccountingLedgerEntry
        WHERE companyid = $1 AND bankaccount = $2 AND reconciled = FALSE`,
@@ -44,9 +41,9 @@ router.get("/reconciliation", async (req: Request, res: Response) => {
     const reconcilingItems = reconcilingRes.rows.map((row) => ({
       reference: row.reference,
       amount: Number(row.amount),
-      type: row.note.includes("Bank charge")
-        ? "bank charge not recorded"
-        : "outstanding cheque",
+      type: row.note.includes('Bank charge')
+        ? 'bank charge not recorded'
+        : 'outstanding cheque',
     }));
 
     const adjustedBalance =
@@ -60,7 +57,7 @@ router.get("/reconciliation", async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
